@@ -1,2 +1,4 @@
 .env
 .venv
+mlflow.db
+mlartifacts/1/f29a661a663b4e2491bf456f3d2d4f1a/artifacts/welcome.txt
