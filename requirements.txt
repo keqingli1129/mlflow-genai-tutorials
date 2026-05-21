@@ -1,4 +1,4 @@
-mlflow>=3.9.0
+mlflow>=3.11.1
 openai>=1.0.0
 python-dotenv>=1.0.0
 jupyter>=1.0.0
