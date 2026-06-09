@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """
-Multi-Agent CI/CD Pipeline — LangChain 1.x + LangGraph Supervisor
+Multi-Agent CI/CD Pipeline — LangChain 1.x (agents-as-tools supervisor)
 Architecture: Supervisor agent receives a work item, routes it to the correct
 stage agent (PLANNING / CODING / TESTING / DEPLOYMENT).
 
+The supervisor is itself a `create_agent`; each specialist is wrapped as a
+`route_to_*` tool the supervisor calls. This is the pattern LangChain now
+recommends in place of the (soft-deprecated) `langgraph-supervisor` library —
+no extra dependency, and routing stays entirely within LangChain 1.x.
+
 Install:
-  pip install -U langchain langgraph langgraph-supervisor langchain-openai pydantic python-dotenv
+  pip install -U langchain langgraph langchain-openai pydantic python-dotenv
 """
 
 import time
@@ -20,7 +25,6 @@ from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
 from langchain.chat_models import init_chat_model
 from langchain.tools import tool
-from langgraph_supervisor import create_supervisor
 
 load_dotenv()
 
@@ -169,27 +173,52 @@ def build_specialist_agents(model_name: str = "gpt-4o-mini") -> dict:
 # 4. SUPERVISOR PIPELINE
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _make_route_tool(stage_key: str, agent, description: str):
+    """Wrap a specialist agent as a `route_to_<stage>` tool the supervisor can call."""
+
+    @tool(f"route_to_{stage_key}", description=description)
+    def _route(work_item: str) -> str:
+        result = agent.invoke({"messages": [{"role": "user", "content": work_item}]})
+        structured = result.get("structured_response")
+        if structured is not None:
+            return structured.model_dump_json()
+        return result["messages"][-1].text
+
+    return _route
+
 def build_pipeline(model_name: str = "gpt-4o-mini"):
     llm    = make_llm(model_name)
     agents = build_specialist_agents(model_name)
 
-    pipeline = create_supervisor(
-        agents=list(agents.values()),
+    route_tools = [
+        _make_route_tool("planning",   agents["planning"],
+            "Route PLANNING work: requirements, user stories, sprint planning, Definition of Ready checks."),
+        _make_route_tool("coding",     agents["coding"],
+            "Route CODING work: implementation, code review, PR readiness, refactoring."),
+        _make_route_tool("testing",    agents["testing"],
+            "Route TESTING work: test writing, test execution, coverage gates, bug triage."),
+        _make_route_tool("deployment", agents["deployment"],
+            "Route DEPLOYMENT work: releases, blue-green deploys, rollbacks, post-deploy validation."),
+    ]
+
+    supervisor = create_agent(
         model=llm,
-        output_mode="last_message",
+        tools=route_tools,
+        name="supervisor_agent",
         system_prompt=(
             "You are the CI/CD Pipeline Orchestrator. "
-            "Your ONLY job is to read the inbound work item and immediately transfer it "
-            "to the correct stage agent using a handoff tool. Do NOT answer yourself.\n"
-            "  PLANNING   → requirements, user stories, sprint planning, Definition of Ready checks\n"
-            "  CODING     → implementation, code review, PR readiness, refactoring\n"
-            "  TESTING    → test writing, test execution, coverage gates, bug triage\n"
-            "  DEPLOYMENT → releases, blue-green deploys, rollbacks, post-deploy validation\n"
-            "One handoff only — transfer immediately."
+            "Your ONLY job is to read the inbound work item and immediately route it "
+            "to the correct stage agent by calling exactly ONE route_to_* tool. "
+            "Do NOT answer the work item yourself.\n"
+            "  route_to_planning   → requirements, user stories, sprint planning, Definition of Ready checks\n"
+            "  route_to_coding     → implementation, code review, PR readiness, refactoring\n"
+            "  route_to_testing    → test writing, test execution, coverage gates, bug triage\n"
+            "  route_to_deployment → releases, blue-green deploys, rollbacks, post-deploy validation\n"
+            "One route only — call the tool immediately, then return its result."
         ),
-    ).compile()
+    )
 
-    return pipeline
+    return supervisor
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -236,12 +265,21 @@ TEST_CASES = [
     {"query": "Integration tests are failing on staging after the DB migration. Needs triage.",        "tier": "standard",  "expected": "testing"},
 ]
 
+def _routed_stage(messages) -> str:
+    """Find which route_to_* tool the supervisor called."""
+    for msg in messages:
+        for tc in getattr(msg, "tool_calls", None) or []:
+            name = tc.get("name", "") if isinstance(tc, dict) else getattr(tc, "name", "")
+            if name.startswith("route_to_"):
+                return name.replace("route_to_", "")
+    return "unknown"
+
 def run_benchmark(model_name: str = "gpt-4o-mini") -> None:
     pipeline = build_pipeline(model_name)
     latencies, successes, failures, correct = [], 0, 0, 0
 
     print("\n" + "═"*75)
-    print(f"  BENCHMARK — LangGraph Supervisor CI/CD Pipeline [{model_name}]")
+    print(f"  BENCHMARK — LangChain Supervisor CI/CD Pipeline [{model_name}]")
     print("═"*75)
 
     for i, case in enumerate(TEST_CASES):
@@ -250,8 +288,7 @@ def run_benchmark(model_name: str = "gpt-4o-mini") -> None:
         try:
             result  = pipeline.invoke({"messages": [{"role": "user", "content": case["query"]}]})
             latency = (time.perf_counter() - t0) * 1000
-            last    = result["messages"][-1]
-            stage   = getattr(last, "name", "unknown").replace("_agent", "")
+            stage   = _routed_stage(result["messages"])
             routed_ok = stage == case["expected"]
             if routed_ok:
                 correct += 1
@@ -297,13 +334,12 @@ def demo(query: str, tier: str = "standard", channel: str = "github") -> None:
         role    = getattr(msg, "type", "unknown")
         name    = getattr(msg, "name", "")
         label   = f"{role}({name})" if name else role
+        for tc in getattr(msg, "tool_calls", None) or []:
+            tc_name = tc.get("name", "") if isinstance(tc, dict) else getattr(tc, "name", "")
+            print(f"    [{label}] → tool_call: {tc_name}")
         content = msg.content
-        if isinstance(content, list):
-            for block in content:
-                if hasattr(block, "name"):
-                    print(f"    [{label}] → tool_call: {block.name}")
-        else:
-            print(f"    [{label}] {str(content)[:120].replace(chr(10), ' ')}")
+        if isinstance(content, str) and content.strip():
+            print(f"    [{label}] {content[:120].replace(chr(10), ' ')}")
 
     print(f"\n  Total latency : {latency:.0f}ms")
 
