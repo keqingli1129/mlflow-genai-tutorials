@@ -2,3 +2,4 @@
 .venv
 mlflow.db
 mlartifacts/
+utils/__pycache__/

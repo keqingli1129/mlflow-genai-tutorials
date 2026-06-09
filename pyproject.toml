@@ -18,6 +18,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "langchain>=1.2.7",
     "langgraph>=0.3",
+    "langgraph-supervisor>=0.0.4",
     "llama-index>=0.14.13",
     "ragas>=0.4.3",
     "gepa>=0.0.18",
