@@ -222,34 +222,7 @@ def build_pipeline(model_name: str = "gpt-4o-mini"):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 5. DOWNSTREAM DISPATCH
-# ═══════════════════════════════════════════════════════════════════════════════
-
-QUEUE_MAP = {
-    "planning":   "jira-backlog",
-    "coding":     "github-pr-queue",
-    "testing":    "github-actions-ci",
-    "deployment": "argocd-deploy-queue",
-}
-
-def dispatch(result: PipelineStageResult, stage: str, tier: str = "standard") -> dict:
-    blocked = result.status in (StageStatus.FAILURE, StageStatus.BLOCKED)
-    if tier == "critical":
-        blocked = True  # always gate on critical-tier services regardless of status
-    return {
-        "queue":     QUEUE_MAP.get(stage, "triage-queue"),
-        "blocked":   blocked,
-        "status":    result.status.value,
-        "action":    result.action_taken,
-        "summary":   result.summary,
-        "artifacts": result.artifacts,
-        "issues":    result.issues,
-        "conf":      result.confidence,
-    }
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 6. BENCHMARK
+# 5. BENCHMARK
 # ═══════════════════════════════════════════════════════════════════════════════
 
 TEST_CASES = [
@@ -315,7 +288,7 @@ def run_benchmark(model_name: str = "gpt-4o-mini") -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 7. SINGLE DEMO
+# 6. SINGLE DEMO
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def demo(query: str, tier: str = "standard", channel: str = "github") -> None:
