@@ -13,10 +13,15 @@ Install:
   pip install -U langchain langgraph langchain-openai pydantic python-dotenv
 """
 
+import sys
 import time
 import statistics
 from enum import Enum
 from typing import List
+
+# Ensure box-drawing characters print on Windows consoles that default to cp1252.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator
@@ -108,7 +113,8 @@ def check_code_quality(component: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def make_llm(model: str = "gpt-4o-mini"):
-    return init_chat_model(model, temperature=0)
+    # OPENAI_API_KEY is read from the environment (loaded from .env via load_dotenv()).
+    return init_chat_model(model, model_provider="openai", temperature=0)
 
 def build_specialist_agents(model_name: str = "gpt-4o-mini") -> dict:
     llm          = make_llm(model_name)
