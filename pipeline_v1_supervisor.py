@@ -112,11 +112,14 @@ def check_code_quality(component: str) -> str:
 # 3. SPECIALIST AGENTS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def make_llm(model: str = "gpt-4o-mini"):
+def make_llm(model: str = "gpt-4o"):
     # OPENAI_API_KEY is read from the environment (loaded from .env via load_dotenv()).
+    # gpt-4o (not -mini): the specialist agents combine multiple tools with a
+    # structured-output response_format, and gpt-4o-mini fails to stop calling
+    # tools in that loop, hitting the graph recursion limit on many work items.
     return init_chat_model(model, model_provider="openai", temperature=0)
 
-def build_specialist_agents(model_name: str = "gpt-4o-mini") -> dict:
+def build_specialist_agents(model_name: str = "gpt-4o") -> dict:
     llm          = make_llm(model_name)
     response_fmt = ToolStrategy(PipelineStageResult, handle_errors="raise")
     shared_tools = [lookup_ticket, get_pipeline_config, check_code_quality]
@@ -192,7 +195,7 @@ def _make_route_tool(stage_key: str, agent, description: str):
 
     return _route
 
-def build_pipeline(model_name: str = "gpt-4o-mini"):
+def build_pipeline(model_name: str = "gpt-4o"):
     llm    = make_llm(model_name)
     agents = build_specialist_agents(model_name)
 
@@ -253,7 +256,7 @@ def _routed_stage(messages) -> str:
                 return name.replace("route_to_", "")
     return "unknown"
 
-def run_benchmark(model_name: str = "gpt-4o-mini") -> None:
+def run_benchmark(model_name: str = "gpt-4o") -> None:
     pipeline = build_pipeline(model_name)
     latencies, successes, failures, correct = [], 0, 0, 0
 
