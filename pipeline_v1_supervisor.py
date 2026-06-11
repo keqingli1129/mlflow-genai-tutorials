@@ -19,6 +19,8 @@ import statistics
 from enum import Enum
 from typing import List
 
+import mlflow
+
 # Ensure box-drawing characters print on Windows consoles that default to cp1252.
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -32,6 +34,9 @@ from langchain.chat_models import init_chat_model
 from langchain.tools import tool
 
 load_dotenv()
+
+mlflow.set_experiment("cicd-supervisor-pipeline")
+mlflow.langchain.autolog()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -307,9 +312,14 @@ def demo(query: str, tier: str = "standard", channel: str = "github") -> None:
     print(f"  TIER    : {tier} | CHANNEL: {channel}")
     print("─"*65)
 
-    t0      = time.perf_counter()
-    result  = pipeline.invoke({"messages": [{"role": "user", "content": query}]})
-    latency = (time.perf_counter() - t0) * 1000
+    t0 = time.perf_counter()
+    with mlflow.start_run(run_name="supervisor_demo"):
+        mlflow.log_params({"tier": tier, "channel": channel, "query": query[:200]})
+        result  = pipeline.invoke({"messages": [{"role": "user", "content": query}]})
+        latency = (time.perf_counter() - t0) * 1000
+        mlflow.log_metric("latency_ms", latency)
+        stage = _routed_stage(result["messages"])
+        mlflow.log_param("routed_stage", stage)
 
     print("\n  MESSAGE TRACE:")
     for msg in result["messages"]:
@@ -327,6 +337,48 @@ def demo(query: str, tier: str = "standard", channel: str = "github") -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 7. MLFLOW EVALUATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from mlflow.genai.scorers import scorer
+from mlflow.entities import Feedback
+
+@scorer
+def routing_accuracy(outputs, expectations) -> Feedback:
+    """Checks whether the supervisor routed the work item to the correct stage."""
+    routed   = _routed_stage(outputs["messages"])
+    expected = expectations["expected_stage"]
+    return Feedback(
+        name="routing_accuracy",
+        value=1.0 if routed == expected else 0.0,
+        rationale=f"Routed to '{routed}', expected '{expected}'",
+    )
+
+def run_mlflow_eval(model_name: str = "gpt-4o") -> None:
+    pipeline = build_pipeline(model_name)
+
+    data = [
+        {
+            "inputs":       {"query": c["query"]},
+            "expectations": {"expected_stage": c["expected"]},
+        }
+        for c in TEST_CASES
+    ]
+
+    def predict(inputs: dict) -> dict:
+        return pipeline.invoke({"messages": [{"role": "user", "content": inputs["query"]}]})
+
+    with mlflow.start_run(run_name=f"eval-{model_name}"):
+        mlflow.log_param("model", model_name)
+        results = mlflow.genai.evaluate(
+            data=data,
+            predict_fn=predict,
+            scorers=[routing_accuracy],
+        )
+        print(results.metrics)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # ENTRY POINT
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -337,5 +389,7 @@ if __name__ == "__main__":
         tier="critical",
         channel="slack",
     )
-    # Uncomment for full benchmark:
+    # Uncomment for MLflow evaluation (logs routing_accuracy per test case):
+    # run_mlflow_eval()
+    # Uncomment for plain latency benchmark (no MLflow):
     # run_benchmark()
