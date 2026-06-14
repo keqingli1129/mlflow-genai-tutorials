@@ -32,6 +32,7 @@ dependencies = [
     "deepeval>=3.9.5",
     "crewai>=0.108.0",
     "crewai-tools>=0.38.1",
+    "openpyxl>=3.1.5",
 ]
 
 [dependency-groups]
