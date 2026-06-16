@@ -16,6 +16,7 @@ Pipeline (naive RAG — no agent, no tool, single pass):
     5. Ask the LLM once and return the answer.
 """
 
+import mlflow
 from dotenv import load_dotenv
 from langchain_chroma import Chroma
 from langchain_core.output_parsers import StrOutputParser
@@ -29,6 +30,7 @@ EMBEDDING_MODEL = "nomic-embed-text"
 OLLAMA_BASE_URL = "http://localhost:11434"
 COLLECTION_NAME = "pdf_collection"
 PERSIST_DIRECTORY = "./chroma_db"
+EXPERIMENT_NAME = "minimal-rag-chain"
 
 RAG_PROMPT = ChatPromptTemplate.from_template(
     """You are a research assistant. Answer the question using ONLY the context below.
@@ -105,6 +107,11 @@ def ask(chain, question):
 def main():
     """Set up the RAG chain and run a sample query."""
     load_dotenv()
+
+    # MLflow tracing: MLFLOW_TRACKING_URI is read from .env (e.g. http://localhost:5000).
+    # autolog() captures the retriever, prompt, and LLM as spans on every chain.invoke().
+    mlflow.set_experiment(EXPERIMENT_NAME)
+    mlflow.langchain.autolog()
 
     llm = create_llm()
     embeddings = create_embeddings()
