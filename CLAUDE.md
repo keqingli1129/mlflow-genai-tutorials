@@ -119,3 +119,8 @@ See `SKILLS.md` for the full catalog. Key ones:
 - **RAG judges** (`RetrievalGroundedness`, `RetrievalRelevance`) require `predict_fn` with tracing enabled — they read from the trace, not from `outputs`
 - **Old vs new API**: Use `mlflow.genai.evaluate()` (MLflow 3.x), not `mlflow.evaluate()` with `model_type="databricks-agent"` (MLflow 2.x)
 - **Judge model format for LiteLLM**: `"databricks/model-name"`, `"anthropic/claude-..."`, `"azure:/gpt-4o"` — not raw model names
+
+<!-- SPECKIT START -->
+For additional context about technologies to be used, project structure,
+shell commands, and other important information, read the current plan
+<!-- SPECKIT END -->
