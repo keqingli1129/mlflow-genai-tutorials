@@ -1,17 +1,29 @@
 #!/usr/bin/env python3
 """
-Multi-Agent CI/CD Pipeline — LangChain 1.x + LangGraph Supervisor
+Multi-Agent CI/CD Pipeline — LangChain 1.x (agents-as-tools supervisor)
 Architecture: Supervisor agent receives a work item, routes it to the correct
 stage agent (PLANNING / CODING / TESTING / DEPLOYMENT).
 
+The supervisor is itself a `create_agent`; each specialist is wrapped as a
+`route_to_*` tool the supervisor calls. This is the pattern LangChain now
+recommends in place of the (soft-deprecated) `langgraph-supervisor` library —
+no extra dependency, and routing stays entirely within LangChain 1.x.
+
 Install:
-  pip install -U langchain langgraph langgraph-supervisor langchain-openai pydantic python-dotenv
+  pip install -U langchain langgraph langchain-openai pydantic python-dotenv
 """
 
+import sys
 import time
 import statistics
 from enum import Enum
 from typing import List
+
+import mlflow
+
+# Ensure box-drawing characters print on Windows consoles that default to cp1252.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator
@@ -20,9 +32,11 @@ from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
 from langchain.chat_models import init_chat_model
 from langchain.tools import tool
-from langgraph_supervisor import create_supervisor
 
 load_dotenv()
+
+mlflow.set_experiment("cicd-supervisor-pipeline")
+mlflow.langchain.autolog()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -103,10 +117,14 @@ def check_code_quality(component: str) -> str:
 # 3. SPECIALIST AGENTS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def make_llm(model: str = "gpt-4o-mini"):
-    return init_chat_model(model, temperature=0)
+def make_llm(model: str = "gpt-4o"):
+    # OPENAI_API_KEY is read from the environment (loaded from .env via load_dotenv()).
+    # gpt-4o (not -mini): the specialist agents combine multiple tools with a
+    # structured-output response_format, and gpt-4o-mini fails to stop calling
+    # tools in that loop, hitting the graph recursion limit on many work items.
+    return init_chat_model(model, model_provider="openai", temperature=0)
 
-def build_specialist_agents(model_name: str = "gpt-4o-mini") -> dict:
+def build_specialist_agents(model_name: str = "gpt-4o") -> dict:
     llm          = make_llm(model_name)
     response_fmt = ToolStrategy(PipelineStageResult, handle_errors="raise")
     shared_tools = [lookup_ticket, get_pipeline_config, check_code_quality]
@@ -169,58 +187,56 @@ def build_specialist_agents(model_name: str = "gpt-4o-mini") -> dict:
 # 4. SUPERVISOR PIPELINE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def build_pipeline(model_name: str = "gpt-4o-mini"):
+def _make_route_tool(stage_key: str, agent, description: str):
+    """Wrap a specialist agent as a `route_to_<stage>` tool the supervisor can call."""
+
+    @tool(f"route_to_{stage_key}", description=description)
+    def _route(work_item: str) -> str:
+        result = agent.invoke({"messages": [{"role": "user", "content": work_item}]})
+        structured = result.get("structured_response")
+        if structured is not None:
+            return structured.model_dump_json()
+        return result["messages"][-1].text
+
+    return _route
+
+def build_pipeline(model_name: str = "gpt-4o"):
     llm    = make_llm(model_name)
     agents = build_specialist_agents(model_name)
 
-    pipeline = create_supervisor(
-        agents=list(agents.values()),
+    route_tools = [
+        _make_route_tool("planning",   agents["planning"],
+            "Route PLANNING work: requirements, user stories, sprint planning, Definition of Ready checks."),
+        _make_route_tool("coding",     agents["coding"],
+            "Route CODING work: implementation, code review, PR readiness, refactoring."),
+        _make_route_tool("testing",    agents["testing"],
+            "Route TESTING work: test writing, test execution, coverage gates, bug triage."),
+        _make_route_tool("deployment", agents["deployment"],
+            "Route DEPLOYMENT work: releases, blue-green deploys, rollbacks, post-deploy validation."),
+    ]
+
+    supervisor = create_agent(
         model=llm,
-        output_mode="last_message",
+        tools=route_tools,
+        name="supervisor_agent",
         system_prompt=(
             "You are the CI/CD Pipeline Orchestrator. "
-            "Your ONLY job is to read the inbound work item and immediately transfer it "
-            "to the correct stage agent using a handoff tool. Do NOT answer yourself.\n"
-            "  PLANNING   → requirements, user stories, sprint planning, Definition of Ready checks\n"
-            "  CODING     → implementation, code review, PR readiness, refactoring\n"
-            "  TESTING    → test writing, test execution, coverage gates, bug triage\n"
-            "  DEPLOYMENT → releases, blue-green deploys, rollbacks, post-deploy validation\n"
-            "One handoff only — transfer immediately."
+            "Your ONLY job is to read the inbound work item and immediately route it "
+            "to the correct stage agent by calling exactly ONE route_to_* tool. "
+            "Do NOT answer the work item yourself.\n"
+            "  route_to_planning   → requirements, user stories, sprint planning, Definition of Ready checks\n"
+            "  route_to_coding     → implementation, code review, PR readiness, refactoring\n"
+            "  route_to_testing    → test writing, test execution, coverage gates, bug triage\n"
+            "  route_to_deployment → releases, blue-green deploys, rollbacks, post-deploy validation\n"
+            "One route only — call the tool immediately, then return its result."
         ),
-    ).compile()
+    )
 
-    return pipeline
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 5. DOWNSTREAM DISPATCH
-# ═══════════════════════════════════════════════════════════════════════════════
-
-QUEUE_MAP = {
-    "planning":   "jira-backlog",
-    "coding":     "github-pr-queue",
-    "testing":    "github-actions-ci",
-    "deployment": "argocd-deploy-queue",
-}
-
-def dispatch(result: PipelineStageResult, stage: str, tier: str = "standard") -> dict:
-    blocked = result.status in (StageStatus.FAILURE, StageStatus.BLOCKED)
-    if tier == "critical":
-        blocked = True  # always gate on critical-tier services regardless of status
-    return {
-        "queue":     QUEUE_MAP.get(stage, "triage-queue"),
-        "blocked":   blocked,
-        "status":    result.status.value,
-        "action":    result.action_taken,
-        "summary":   result.summary,
-        "artifacts": result.artifacts,
-        "issues":    result.issues,
-        "conf":      result.confidence,
-    }
+    return supervisor
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 6. BENCHMARK
+# 5. BENCHMARK
 # ═══════════════════════════════════════════════════════════════════════════════
 
 TEST_CASES = [
@@ -236,12 +252,21 @@ TEST_CASES = [
     {"query": "Integration tests are failing on staging after the DB migration. Needs triage.",        "tier": "standard",  "expected": "testing"},
 ]
 
-def run_benchmark(model_name: str = "gpt-4o-mini") -> None:
+def _routed_stage(messages) -> str:
+    """Find which route_to_* tool the supervisor called."""
+    for msg in messages:
+        for tc in getattr(msg, "tool_calls", None) or []:
+            name = tc.get("name", "") if isinstance(tc, dict) else getattr(tc, "name", "")
+            if name.startswith("route_to_"):
+                return name.replace("route_to_", "")
+    return "unknown"
+
+def run_benchmark(model_name: str = "gpt-4o") -> None:
     pipeline = build_pipeline(model_name)
     latencies, successes, failures, correct = [], 0, 0, 0
 
     print("\n" + "═"*75)
-    print(f"  BENCHMARK — LangGraph Supervisor CI/CD Pipeline [{model_name}]")
+    print(f"  BENCHMARK — LangChain Supervisor CI/CD Pipeline [{model_name}]")
     print("═"*75)
 
     for i, case in enumerate(TEST_CASES):
@@ -250,8 +275,7 @@ def run_benchmark(model_name: str = "gpt-4o-mini") -> None:
         try:
             result  = pipeline.invoke({"messages": [{"role": "user", "content": case["query"]}]})
             latency = (time.perf_counter() - t0) * 1000
-            last    = result["messages"][-1]
-            stage   = getattr(last, "name", "unknown").replace("_agent", "")
+            stage   = _routed_stage(result["messages"])
             routed_ok = stage == case["expected"]
             if routed_ok:
                 correct += 1
@@ -278,7 +302,7 @@ def run_benchmark(model_name: str = "gpt-4o-mini") -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 7. SINGLE DEMO
+# 6. SINGLE DEMO
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def demo(query: str, tier: str = "standard", channel: str = "github") -> None:
@@ -288,24 +312,70 @@ def demo(query: str, tier: str = "standard", channel: str = "github") -> None:
     print(f"  TIER    : {tier} | CHANNEL: {channel}")
     print("─"*65)
 
-    t0      = time.perf_counter()
-    result  = pipeline.invoke({"messages": [{"role": "user", "content": query}]})
-    latency = (time.perf_counter() - t0) * 1000
+    t0 = time.perf_counter()
+    with mlflow.start_run(run_name="supervisor_demo"):
+        mlflow.log_params({"tier": tier, "channel": channel, "query": query[:200]})
+        result  = pipeline.invoke({"messages": [{"role": "user", "content": query}]})
+        latency = (time.perf_counter() - t0) * 1000
+        mlflow.log_metric("latency_ms", latency)
+        stage = _routed_stage(result["messages"])
+        mlflow.log_param("routed_stage", stage)
 
     print("\n  MESSAGE TRACE:")
     for msg in result["messages"]:
         role    = getattr(msg, "type", "unknown")
         name    = getattr(msg, "name", "")
         label   = f"{role}({name})" if name else role
+        for tc in getattr(msg, "tool_calls", None) or []:
+            tc_name = tc.get("name", "") if isinstance(tc, dict) else getattr(tc, "name", "")
+            print(f"    [{label}] → tool_call: {tc_name}")
         content = msg.content
-        if isinstance(content, list):
-            for block in content:
-                if hasattr(block, "name"):
-                    print(f"    [{label}] → tool_call: {block.name}")
-        else:
-            print(f"    [{label}] {str(content)[:120].replace(chr(10), ' ')}")
+        if isinstance(content, str) and content.strip():
+            print(f"    [{label}] {content[:120].replace(chr(10), ' ')}")
 
     print(f"\n  Total latency : {latency:.0f}ms")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 7. MLFLOW EVALUATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from mlflow.genai.scorers import scorer
+from mlflow.entities import Feedback
+
+@scorer
+def routing_accuracy(outputs, expectations) -> Feedback:
+    """Checks whether the supervisor routed the work item to the correct stage."""
+    routed   = _routed_stage(outputs["messages"])
+    expected = expectations["expected_stage"]
+    return Feedback(
+        name="routing_accuracy",
+        value=1.0 if routed == expected else 0.0,
+        rationale=f"Routed to '{routed}', expected '{expected}'",
+    )
+
+def run_mlflow_eval(model_name: str = "gpt-4o") -> None:
+    pipeline = build_pipeline(model_name)
+
+    data = [
+        {
+            "inputs":       {"query": c["query"]},
+            "expectations": {"expected_stage": c["expected"]},
+        }
+        for c in TEST_CASES
+    ]
+
+    def predict(inputs: dict) -> dict:
+        return pipeline.invoke({"messages": [{"role": "user", "content": inputs["query"]}]})
+
+    with mlflow.start_run(run_name=f"eval-{model_name}"):
+        mlflow.log_param("model", model_name)
+        results = mlflow.genai.evaluate(
+            data=data,
+            predict_fn=predict,
+            scorers=[routing_accuracy],
+        )
+        print(results.metrics)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -319,5 +389,7 @@ if __name__ == "__main__":
         tier="critical",
         channel="slack",
     )
-    # Uncomment for full benchmark:
+    # Uncomment for MLflow evaluation (logs routing_accuracy per test case):
+    # run_mlflow_eval()
+    # Uncomment for plain latency benchmark (no MLflow):
     # run_benchmark()

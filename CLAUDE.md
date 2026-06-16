@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A tutorial series teaching MLflow's GenAI platform (tracing, experiment tracking, prompt management, evaluation, RAG, multi-agent orchestration). Twelve sequential Jupyter notebooks covering core GenAI workflows through advanced multi-agent patterns. MLflow version: **3.10.0rc0** (pinned in `pyproject.toml`). Uses the **MLflow 3.x API** — specifically `mlflow.genai.evaluate()` not the old `mlflow.evaluate()`.
+A tutorial series teaching MLflow's GenAI platform (tracing, experiment tracking, prompt management, evaluation, RAG, multi-agent orchestration). Twelve sequential Jupyter notebooks covering core GenAI workflows through advanced multi-agent patterns. MLflow version: **3.11.1** (pinned in `pyproject.toml`). Requires **Python >=3.11**. Uses the **MLflow 3.x API** — specifically `mlflow.genai.evaluate()` not the old `mlflow.evaluate()`.
 
 ## Environment Setup
 
@@ -21,6 +21,8 @@ Required `.env` variables:
 - `OPENAI_API_KEY` — for notebooks using OpenAI directly
 - `MLFLOW_TRACKING_URI=http://localhost:5000` — MLflow server location
 - `DATABRICKS_HOST`, `DATABRICKS_TOKEN` — only if using Databricks AI Gateway
+- `AI_GATEWAY_BASE_URL`, `AI_GATEWAY_MODELS` — comma-separated list of model names, Databricks AI Gateway only
+- `USE_DATABRICKS_CLIENT`, `USE_DATABRICKS_AI_GATEWAY`, `USE_OPENAI_CLIENT` — set one to `"True"` to select provider in `utils/clnt_utils.py`
 
 ## Running Tests / Scripts
 
@@ -82,12 +84,17 @@ judge = make_judge(name="...", instructions="...{{ trace }}...", model="databric
 feedback = judge(trace=mlflow.get_trace(trace_id))
 ```
 
-### `utils/clnt_utils.py`
+### `utils/`
 
-Shared client factory used across notebooks. Supports three providers controlled by env vars:
-- **OpenAI** (`USE_DATABRICKS_CLIENT=False`, `USE_DATABRICKS_AI_GATEWAY=False`)
-- **Databricks workspace** (`USE_DATABRICKS_CLIENT=True`)
-- **Databricks AI Gateway** (`USE_DATABRICKS_AI_GATEWAY=True`)
+- **`clnt_utils.py`** — Shared client factory used across notebooks. Supports three providers controlled by env vars: OpenAI (default), Databricks workspace (`USE_DATABRICKS_CLIENT=True`), Databricks AI Gateway (`USE_DATABRICKS_AI_GATEWAY=True`). Also exports `get_langchain_chat_openai_client` and `get_databricks_langchain_chat_client` for LangChain consumers.
+- **`fema_data.py`** — 200 fabricated FEMA disaster records (2020–2025) returned as a `pd.DataFrame` via `get_disaster_data()`. Used as the structured data source for the Genie subagent in notebooks 10 and 12.
+- **`policy_docs.py`** — 11 synthetic FEMA policy documents returned as `dict[str, str]` via `get_policy_documents()`. Used as the knowledge base for the policy search tool in notebooks 10 and 12.
+
+### Standalone Scripts
+
+- **`pipeline_v1.py`** — LangChain 1.x intent-routing agent demo with Pydantic structured output, custom middleware (`PIIMiddleware`, `RoutingContextMiddleware`), and a 10-query benchmark harness. Uses `langchain.agents.create_agent` (LangChain 1.x API, not `create_react_agent`).
+- **`pipeline_v1_supervisor.py`** — Multi-agent CI/CD pipeline demo (supervisor + PLANNING/CODING/TESTING/DEPLOYMENT specialists) using the agents-as-tools supervisor pattern. Instruments with `mlflow.langchain.autolog()` and logs to the `cicd-supervisor-pipeline` experiment.
+- **`prompt_optimization.ipynb`** — Standalone notebook (not part of the numbered series) for exploring GEPA prompt optimization outside the structured tutorial flow.
 
 ### MLflow Tracking
 

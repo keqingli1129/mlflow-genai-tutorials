@@ -6,11 +6,16 @@ Install:
   pip install -U langchain langgraph langchain-openai pydantic python-dotenv
 """
 
+import sys
 import time
 import statistics
 from dataclasses import dataclass
 from enum import Enum
 from typing import List
+
+# Ensure box-drawing characters print on Windows consoles that default to cp1252.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator
@@ -20,6 +25,7 @@ from langchain.agents.middleware import AgentMiddleware, PIIMiddleware
 from langchain.agents.middleware.types import ModelRequest
 from langchain.agents.structured_output import ToolStrategy
 from langchain.chat_models import init_chat_model
+from langchain.messages import SystemMessage
 from langchain.tools import tool
 
 load_dotenv()
@@ -90,21 +96,22 @@ class RoutingContext:
     customer_tier:  str = "standard"
 
 class RoutingContextMiddleware(AgentMiddleware):
-    def before_model(self, request: ModelRequest) -> ModelRequest:
+    def wrap_model_call(self, request: ModelRequest, handler):
+        # Inject runtime context into the system message before each model call.
+        # (In langchain 1.x the system message is request.system_message, separate
+        # from request.messages, and the request is modified via override().)
         ctx: RoutingContext = request.runtime.context
         note = (f"[ROUTING CONTEXT] Source: {ctx.source_channel} | Tier: {ctx.customer_tier}. "
                 "Enterprise customers receive HIGH priority minimum.")
-        msgs = list(request.messages)
-        if msgs and msgs[0].type == "system":
-            from langchain.messages import SystemMessage
-            msgs[0] = SystemMessage(content=f"{note}\n\n{msgs[0].content}")
-        return request.override(messages=msgs)
+        base = request.system_message.text if request.system_message else ""
+        request = request.override(system_message=SystemMessage(content=f"{note}\n\n{base}"))
+        return handler(request)
 
-    def after_agent(self, state: AgentState) -> AgentState:
+    def after_agent(self, state: AgentState, runtime) -> None:
         d = state.get("structured_response")
         if isinstance(d, RoutingDecision):
             print(f"  [Middleware] dept={d.department.value} priority={d.priority.value} conf={d.confidence:.2f}")
-        return state
+        return None
 
 
 # ── 4. AGENT FACTORY ──────────────────────────────────────────────────────────
@@ -121,8 +128,7 @@ def build_routing_agent(model_name: str = "gpt-4o-mini"):
             "to verify SLA thresholds before setting priority."
         ),
         middleware=[
-            PIIMiddleware("email",        strategy="redact", apply_to_input=True),
-            PIIMiddleware("phone_number", strategy="redact", apply_to_input=True),
+            PIIMiddleware("email", strategy="redact", apply_to_input=True),
             RoutingContextMiddleware(),
         ],
         context_schema=RoutingContext,
@@ -180,7 +186,7 @@ def run_benchmark(model_name: str = "gpt-4o-mini") -> None:
         t0 = time.perf_counter()
         try:
             result  = agent.invoke({"messages": [{"role": "user", "content": case["query"]}]},
-                                   config={"configurable": {"context": ctx}})
+                                   context=ctx)
             latency = (time.perf_counter() - t0) * 1000
             d: RoutingDecision = result["structured_response"]
             ticket  = dispatch(d, ctx)
@@ -214,7 +220,7 @@ def demo(query: str, tier: str = "pro", channel: str = "web") -> None:
     print("─"*60)
     t0     = time.perf_counter()
     result = agent.invoke({"messages": [{"role": "user", "content": query}]},
-                          config={"configurable": {"context": ctx}})
+                          context=ctx)
     latency = (time.perf_counter() - t0) * 1000
     d: RoutingDecision = result["structured_response"]
     ticket = dispatch(d, ctx)
