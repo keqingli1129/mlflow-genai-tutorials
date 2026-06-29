@@ -17,6 +17,7 @@ Pipeline:
 """
 
 import os
+import time
 
 from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyPDFLoader
@@ -103,7 +104,28 @@ def build_vector_store(chunks, embeddings):
         persist_directory=PERSIST_DIRECTORY,
     )
 
-    vector_store.add_documents(documents=chunks)
+    # Warm up the Ollama runner before the first real batch so its model
+    # subprocess is fully started (avoids a connection-refused on cold start).
+    embeddings.embed_query("warmup")
+
+    # Add in small batches with a short retry. Sending all chunks in one
+    # embed request can overload/crash the Ollama runner subprocess.
+    batch_size = 50
+    for start in range(0, len(chunks), batch_size):
+        batch = chunks[start : start + batch_size]
+        for attempt in range(3):
+            try:
+                vector_store.add_documents(documents=batch)
+                break
+            except Exception as exc:  # noqa: BLE001 - retry transient runner errors
+                if attempt == 2:
+                    raise
+                wait = 2 * (attempt + 1)
+                print(f"  ! Batch {start}-{start + len(batch)} failed "
+                      f"({exc}); retrying in {wait}s...")
+                time.sleep(wait)
+        print(f"  ✓ Embedded {min(start + batch_size, len(chunks))}/{len(chunks)} chunks")
+
     print(f"✓ Added {len(chunks)} document chunks to vector store")
 
     return vector_store
