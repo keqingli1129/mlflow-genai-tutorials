@@ -36,9 +36,21 @@ dependencies = [
     "langchain-chroma>=1.0.0",
     "langchain-ollama>=1.1.0",
     "pypdf>=6.13.2",
+    "torch>=2.13.0",
 ]
 
 [dependency-groups]
 dev = [
     "ipykernel>=7.1.0",
 ]
+
+# Pin torch to the PyTorch CUDA 13.0 wheel index for RTX 50-series (Blackwell/sm_120) GPU support.
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu130" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
