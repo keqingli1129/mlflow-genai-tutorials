@@ -17,3 +17,4 @@ Software_Development_Tracker.xlsx
 chroma_db/
 ../01 Semantic Search/chroma_db/chroma.sqlite3
 mlruns/
+.env
