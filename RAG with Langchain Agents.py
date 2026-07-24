@@ -23,8 +23,8 @@ from langchain_core.tools import tool
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 
 # Configuration
-LLM_MODEL = "qwen3:0.6b"
-EMBEDDING_MODEL = "nomic-embed-text"
+LLM_MODEL = "qwen3:1.7b"
+EMBEDDING_MODEL = "bge-m3"
 OLLAMA_BASE_URL = "http://localhost:11434"
 COLLECTION_NAME = "pdf_collection"
 PERSIST_DIRECTORY = "./chroma_db"

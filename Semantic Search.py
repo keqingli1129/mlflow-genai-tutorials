@@ -28,7 +28,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 PDF_URL = "https://arxiv.org/pdf/2501.04040.pdf"
 CHUNK_SIZE = 1024
 CHUNK_OVERLAP = 100  # 10% of chunk size
-EMBEDDING_MODEL = "nomic-embed-text"
+EMBEDDING_MODEL = "bge-m3"
 OLLAMA_BASE_URL = "http://localhost:11434"
 COLLECTION_NAME = "pdf_collection"
 PERSIST_DIRECTORY = "./chroma_db"
