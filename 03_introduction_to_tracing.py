@@ -63,9 +63,10 @@ def call_without_tracing(client, model_name, prompt):
 
 
 def call_with_tracing(client, model_name, prompt):
-    # Enable OpenAI autologging - THIS IS THE MAGIC LINE!
+    # Ensure the experiment and autologging are set, in case this is run
+    # standalone (i.e. call_with_tracing() was not called first).
+    mlflow.set_experiment("06-tracing-introduction")
     mlflow.openai.autolog()
-
     print("✅ OpenAI autologging enabled")
     print("   All OpenAI API calls will now be automatically traced!")
 
@@ -93,7 +94,10 @@ def call_with_tracing(client, model_name, prompt):
 def multi_step_workflow(client, model_name):
     # Simple multi-step workflow
     print("\n🔄 Multi-step workflow with automatic tracing...\n")
-
+    # Ensure the experiment and autologging are set, in case this is run
+    # standalone (i.e. call_with_tracing() was not called first).
+    mlflow.set_experiment("06-tracing-introduction")
+    mlflow.openai.autolog()
     # Step 1: Generate a topic
     print("Step 1: Generating topic...")
     topic_response = client.chat.completions.create(
@@ -341,13 +345,13 @@ def main():
     call_without_tracing(client, model_name, prompt)
     call_with_tracing(client, model_name, prompt)
 
-    multi_step_workflow(client, model_name)
+    # multi_step_workflow(client, model_name)
 
-    llm = langchain_tracing(model_name, use_databricks_provider)
+    # llm = langchain_tracing(model_name, use_databricks_provider)
 
-    error_scenario_invalid_role(client, model_name)
-    error_scenario_invalid_tool_name(client, model_name)
-    error_scenario_multi_step_pipeline(llm)
+    # error_scenario_invalid_role(client, model_name)
+    # error_scenario_invalid_tool_name(client, model_name)
+    # error_scenario_multi_step_pipeline(llm)
 
 
 if __name__ == "__main__":
