@@ -163,6 +163,9 @@ def multi_step_workflow(client, model_name):
 def langchain_tracing(model_name, use_databricks_provider):
     from langchain_core.prompts import ChatPromptTemplate
 
+    # Ensure the experiment and autologging are set, in case this is run
+    # standalone (i.e. call_with_tracing() was not called first).
+    mlflow.set_experiment("06-tracing-introduction")
     # Enable LangChain autologging
     mlflow.langchain.autolog()
 
@@ -209,7 +212,8 @@ def error_scenario_invalid_role(client, model_name):
     # Valid OpenAI roles are: "system", "user", "assistant", "tool".
     # Passing an unknown role ("robot") triggers a BadRequestError.
     # Note: Databricks AI Gateway may surface a slightly different error message.
-
+    mlflow.set_experiment("06-tracing-introduction1")
+    mlflow.openai.autolog()
     print("=" * 60)
     print("🐛 Error Scenario 1: Invalid Message Role")
     print("=" * 60)
@@ -236,7 +240,8 @@ def error_scenario_invalid_tool_name(client, model_name):
     # OpenAI function names must match ^[a-zA-Z0-9_-]{1,64}$.
     # Using spaces (e.g. "get weather data") is a common mistake that triggers
     # a BadRequestError — captured automatically by mlflow.openai.autolog().
-
+    mlflow.set_experiment("06-tracing-introduction")
+    mlflow.openai.autolog()
     print("=" * 60)
     print("🐛 Error Scenario 2: Invalid Tool/Function Name")
     print("=" * 60)
@@ -288,7 +293,8 @@ def error_scenario_multi_step_pipeline(llm):
     from langchain_core.output_parsers import StrOutputParser
     from langchain_core.prompts import ChatPromptTemplate
     from langchain_core.runnables import RunnableLambda
-
+    mlflow.set_experiment("06-tracing-introduction")
+    mlflow.langchain.autolog()
     print("=" * 60)
     print("🐛 Error Scenario 3: Multi-Step Pipeline — Step 3 Fails")
     print("=" * 60)
@@ -342,16 +348,16 @@ def main():
     client, model_name, use_databricks_provider = setup()
 
     prompt = "Explain what distributed tracing is in one sentence."
-    call_without_tracing(client, model_name, prompt)
-    call_with_tracing(client, model_name, prompt)
+    # call_without_tracing(client, model_name, prompt)
+    # call_with_tracing(client, model_name, prompt)
 
     # multi_step_workflow(client, model_name)
 
-    # llm = langchain_tracing(model_name, use_databricks_provider)
+    llm = langchain_tracing(model_name, use_databricks_provider)
 
     # error_scenario_invalid_role(client, model_name)
     # error_scenario_invalid_tool_name(client, model_name)
-    # error_scenario_multi_step_pipeline(llm)
+    error_scenario_multi_step_pipeline(llm)
 
 
 if __name__ == "__main__":
