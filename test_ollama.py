@@ -1,7 +1,7 @@
 import ollama
 
-CHAT_MODEL = "qwen3:0.6b"
-EMBED_MODEL = "nomic-embed-text"
+CHAT_MODEL = "qwen3:1.7b"
+EMBED_MODEL = "bge-m3"
 
 def test_chat():
     response = ollama.chat(
@@ -29,3 +29,4 @@ def test_embedding():
 
 if __name__ == "__main__":
     test_chat()
+    test_embedding()
